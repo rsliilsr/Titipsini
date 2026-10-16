@@ -1,0 +1,172 @@
+import { useEffect, useState } from 'react';
+import { Link, usePage } from '@inertiajs/react';
+import { LayoutGrid, Package, Bell, User, CheckCircle2, XCircle, X, ArrowLeft, Sun, Moon } from 'lucide-react';
+
+const navItems = [
+    { label: 'Beranda', href: '/mitra/dashboard', icon: LayoutGrid },
+    { label: 'Pesanan', href: '/mitra/pesanan', icon: Package },
+    { label: 'Notifikasi', href: '/mitra/notifikasi', icon: Bell },
+    { label: 'Profil', href: '/mitra/profil', icon: User },
+];
+
+const pageTitles = {
+    '/mitra/alamat': 'Alamat',
+    '/mitra/layanan': 'Kelola Layanan',
+    '/mitra/layanan/barang': 'Kelola Barang',
+    '/mitra/layanan/kendaraan': 'Kelola Kendaraan',
+    '/mitra/layanan/bangunan': 'Kelola Bangunan',
+    '/mitra/layanan/pindahan': 'Kelola Pick Up',
+    '/mitra/legalitas': 'Legalitas',
+    '/mitra/notifikasi': 'Notifikasi',
+    '/mitra/pesanan': 'Pesanan',
+    '/mitra/penarikan': 'Penarikan Dana',
+    '/mitra/pendapatan': 'Riwayat Pendapatan',
+    '/mitra/profil': 'Profil Mitra',
+    '/mitra/rekening': 'Rekening Bank',
+    '/mitra/verifikasi-rekening': 'Verifikasi Rekening',
+    '/mitra/keamanan': 'Keamanan',
+    '/mitra/kebijakan-privasi': 'Kebijakan Privasi',
+    '/mitra/bantuan': 'Pusat Bantuan',
+};
+
+function Toast({ type, message, onClose }) {
+    useEffect(() => {
+        const timer = setTimeout(onClose, 3500);
+        return () => clearTimeout(timer);
+    }, [onClose]);
+
+    const isSuccess = type === 'success';
+
+    return (
+        <div
+            className={`flex items-start gap-2 rounded-xl border px-3.5 py-3 shadow-lg ${isSuccess ? 'border-green-200 bg-green-50' : 'border-red-200 bg-red-50'
+                }`}
+        >
+            {isSuccess ? (
+                <CheckCircle2 size={18} className="mt-0.5 shrink-0 text-green-600" />
+            ) : (
+                <XCircle size={18} className="mt-0.5 shrink-0 text-red-500" />
+            )}
+            <p className={`flex-1 text-sm ${isSuccess ? 'text-green-800' : 'text-red-700'}`}>{message}</p>
+            <button onClick={onClose} className={isSuccess ? 'text-green-500' : 'text-red-400'}>
+                <X size={15} />
+            </button>
+        </div>
+    );
+}
+
+export default function MitraLayout({ children, title, hideBack = false, onBack }) {
+    const { url, props } = usePage();
+    const [toast, setToast] = useState(null);
+    const [isDark, setIsDark] = useState(() => {
+        if (typeof window === 'undefined') return false;
+        const savedTheme = localStorage.getItem('theme');
+        return savedTheme ? savedTheme === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+    });
+    const pathname = url.split('?')[0];
+    const matchedTitle = Object.entries(pageTitles)
+        .sort(([firstPath], [secondPath]) => secondPath.length - firstPath.length)
+        .find(([pagePath]) => pathname === pagePath || pathname.startsWith(`${pagePath}/`))?.[1];
+    const isDashboard = pathname === '/mitra/dashboard';
+    const hideBackButton = ['/mitra/pesanan', '/mitra/notifikasi', '/mitra/profil'].includes(pathname);
+    const centerNavbarTitle = ['/mitra/pesanan', '/mitra/notifikasi', '/mitra/profil'].includes(pathname);
+    const navbarTitle = title || (isDashboard ? 'Titipsini.com' : matchedTitle || 'Mitra');
+    const showBackButton = !isDashboard && !hideBackButton && !hideBack;
+
+    useEffect(() => {
+        document.documentElement.classList.toggle('dark', isDark);
+        localStorage.setItem('theme', isDark ? 'dark' : 'light');
+    }, [isDark]);
+
+    useEffect(() => {
+        if (props.flash?.success) {
+            setToast({ type: 'success', message: props.flash.success });
+        } else if (props.flash?.error) {
+            setToast({ type: 'error', message: props.flash.error });
+        }
+    }, [props.flash?.success, props.flash?.error]);
+
+    return (
+        <div className="min-h-dvh bg-gray-200 dark:bg-gray-950 sm:flex sm:items-center sm:justify-center sm:py-6">
+            <div className="relative mx-auto flex h-dvh w-full max-w-[430px] flex-col overflow-hidden bg-gray-50 dark:bg-gray-900 sm:h-[850px] sm:shadow-xl">
+                <header className="z-10 shrink-0 border-b border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
+                    <div
+                        className="flex min-h-14 items-center px-4 pb-3"
+                        style={{ paddingTop: 'max(0.75rem, env(safe-area-inset-top))' }}
+                    >
+                        {showBackButton && (
+                            <button
+                                type="button"
+                                onClick={onBack || (() => window.history.back())}
+                                aria-label="Kembali ke halaman sebelumnya"
+                                className="mr-3 flex shrink-0 items-center text-gray-600 hover:text-gray-900"
+                            >
+                                <ArrowLeft size={20} />
+                            </button>
+                        )}
+                        <Link
+                            href="/mitra/dashboard"
+                            className={`flex items-center gap-1.5 ${centerNavbarTitle ? 'absolute left-1/2 -translate-x-1/2' : ''}`}
+                        >
+                            {isDashboard ? (
+                                <>
+                                    <img
+                                        src="/images/logo-titipsini.png"
+                                        alt="Logo"
+                                        className="h-6 w-auto object-contain"
+                                    />
+                                    <span className="text-base font-bold tracking-tight text-green-700">
+                                        Titipsini<span className="mx-0.5 text-[#fbbf24]">•</span>Com
+                                    </span>
+                                </>
+                            ) : (
+                                <span className="text-base font-bold tracking-tight text-gray-900 dark:text-gray-100">{navbarTitle}</span>
+                            )}
+                        </Link>
+                        <button
+                            type="button"
+                            onClick={() => setIsDark((current) => !current)}
+                            aria-label={isDark ? 'Aktifkan mode terang' : 'Aktifkan mode gelap'}
+                            title={isDark ? 'Mode terang' : 'Mode gelap'}
+                            className="ml-auto flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700"
+                        >
+                            {isDark ? <Sun size={18} /> : <Moon size={18} />}
+                        </button>
+                    </div>
+                </header>
+
+                {toast && (
+                    <div className="absolute inset-x-0 top-3 z-30 px-4">
+                        <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />
+                    </div>
+                )}
+
+                <main className="flex-1 overflow-y-auto pb-28">{children}</main>
+
+                <nav
+                    className="absolute inset-x-0 bottom-0 z-10 flex justify-around border-t border-gray-200 bg-white py-2 dark:border-gray-700 dark:bg-gray-800"
+                    style={{ paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom))' }}
+                >
+                    {navItems.map(({ label, href, icon: Icon }) => {
+                        // Memperbaiki logika active agar tidak bentrok dengan rute lain (seperti /mitra/profil)
+                        const active = href === '/mitra/dashboard'
+                            ? url === '/mitra/dashboard'
+                            : url === href || url.startsWith(href + '/');
+
+                        return (
+                            <Link
+                                key={href}
+                                href={href}
+                                className={`flex flex-col items-center gap-0.5 px-2 text-[11px] ${active ? 'text-green-600 dark:text-green-400' : 'text-gray-500 dark:text-gray-400'
+                                    }`}
+                            >
+                                <Icon size={20} />
+                                {label}
+                            </Link>
+                        );
+                    })}
+                </nav>
+            </div>
+        </div>
+    );
+}

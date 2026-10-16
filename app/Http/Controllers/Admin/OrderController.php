@@ -1,0 +1,377 @@
+<?php
+
+namespace App\Http\Controllers\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\Notifikasi;
+use App\Models\Order;
+use App\Models\PaymentSetting;
+use App\Models\PendapatanPlatform;
+use App\Services\OrderFaseService;
+use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\Rule;
+use Inertia\Inertia;
+
+class OrderController extends Controller
+{
+    public function index(Request $request)
+    {
+        $search = $request->string('search')->toString();
+        $serviceType = $request->string('service_type')->toString();
+        $status = $request->string('status')->toString();
+        $city = $request->string('city')->toString();
+
+        $orders = Order::with(['customer:id,name,phone', 'partner:id,name,phone'])
+            ->when($search, function ($query, $search) {
+                $query->where('order_code', 'like', "%{$search}%")
+                    ->orWhereHas('customer', fn ($q) => $q->where('name', 'like', "%{$search}%"));
+            })
+            ->when($serviceType, fn ($query, $value) => $query->where('service_type', $value))
+            ->when($status, fn ($query, $value) => $query->where('status', $value))
+            ->when($city, fn ($query, $value) => $query->where('city', $value))
+            ->latest()
+            ->paginate(10)
+            ->through(function ($order) {
+                return [
+                    'id' => $order->id,
+                    'order_code' => $order->order_code,
+                    'service_type' => $order->service_type,
+                    'is_pickup' => $order->is_pickup,
+                    'city' => $order->city,
+                    'status' => $order->status,
+                    // Fase operasional (menunggu/berjalan/akhir) - dipakai frontend
+                    // untuk menampilkan badge "Siap Diselesaikan" saat fase sudah
+                    // akhir tapi status masih 'diproses'.
+                    'fase' => $order->fase,
+                    // Label fase yang enak dibaca (mis. "Sedang Disewa") - dipakai
+                    // frontend untuk menggantikan tulisan "diproses" yang generik
+                    // selagi pesanan masih berjalan.
+                    'fase_label' => OrderFaseService::label($order->service_type, $order->fase, (bool) $order->has_pickup),
+                    // Denda keterlambatan (0 kalau tidak terlambat). Karena
+                    // updateStatus() di bawah sudah mewajibkan fase === 'akhir'
+                    // sebelum status bisa 'selesai', tanggal_selesai_aktual
+                    // dijamin sudah terkunci begitu order selesai - jadi nilai
+                    // ini konsisten baik masih berjalan (estimasi live) maupun
+                    // sudah selesai (nilai final). 100% masuk saldo mitra,
+                    // tanpa potongan komisi - lihat User::saldoMitra().
+                    'denda' => $order->hitungDenda(),
+                    'denda_payment_receipt' => ($order->bukti_denda ?? $order->denda_payment_receipt)
+                        ? Storage::disk('public')->url($order->bukti_denda ?? $order->denda_payment_receipt)
+                        : null,
+                    'denda_paid_at' => $order->denda_paid_at?->format('d M Y H:i'),
+                    'cancel_reason' => $order->cancel_reason,
+                    'total_price' => $order->total_price,
+                    'payment_method' => $order->payment_method,
+                    'payment_receipt' => $order->payment_receipt ? Storage::disk('public')->url($order->payment_receipt) : null,
+                    // Dipakai frontend untuk menampilkan badge "Uang Belum Diterima"
+                    // + tombol konfirmasi, khusus order dengan payment_method 'cod'.
+                    'payment_verified_at' => $order->payment_verified_at?->format('d M Y H:i'),
+                    'created_at' => $order->created_at ? $order->created_at->format('d M Y H:i') : null,
+                    // Rentang waktu sewa/titip sesuai yang diisi customer saat booking
+                    // (bukan waktu aktual dititip/diambil) - dipakai untuk kolom
+                    // "Periode" di tabel Admin.
+                    'start_date' => $order->start_date ? Carbon::parse($order->start_date)->format('d M Y') : null,
+                    'end_date' => $order->end_date ? Carbon::parse($order->end_date)->format('d M Y') : null,
+                    'duration_label' => $this->hitungDurasi($order),
+                    'customer' => $order->customer,
+                    'partner' => $order->partner,
+                ];
+            })
+            ->withQueryString();
+
+        return Inertia::render('Admin/Pesanan/Index', [
+            'orders' => $orders,
+            'filters' => [
+                'search' => $search,
+                'service_type' => $serviceType,
+                'status' => $status,
+                'city' => $city,
+            ],
+            'cities' => Order::query()->whereNotNull('city')->distinct()->orderBy('city')->pluck('city'),
+        ]);
+    }
+
+    /**
+     * Hitung durasi sewa/titip dalam hari, berdasarkan start_date & end_date
+     * yang diisi customer saat booking. Sama persis dengan yang dipakai di
+     * Mitra\OrderController, supaya angka "X hari" konsisten di kedua panel.
+     */
+    private function hitungDurasi(Order $order): ?string
+    {
+        if (! $order->start_date || ! $order->end_date) {
+            return null;
+        }
+
+        $mulai = Carbon::parse($order->start_date);
+        $selesai = Carbon::parse($order->end_date);
+        $hari = $mulai->diffInDays($selesai) + 1;
+
+        return $hari.' hari';
+    }
+
+    /**
+     * Konfigurasi notifikasi per status — dipakai untuk memberi tahu customer
+     * setiap kali admin mengubah status pesanan.
+     */
+    protected function notifikasiUntukStatus(Order $order, string $status, ?string $cancelReason): void
+    {
+        $map = [
+            'diproses' => [
+                'type' => 'penitipan_berhasil',
+                'judul' => 'Pesanan Sedang Diproses',
+                'pesan' => 'Pesanan '.$order->order_code.' sedang diproses oleh mitra.',
+            ],
+            'selesai' => [
+                'type' => 'penitipan_selesai',
+                'judul' => 'Penitipan Selesai',
+                'pesan' => 'Pesanan '.$order->order_code.' telah selesai. Terima kasih telah menggunakan Titipsini.',
+            ],
+            'dibatalkan' => [
+                'type' => 'penitipan_dibatalkan',
+                'judul' => 'Pesanan Dibatalkan',
+                'pesan' => 'Pesanan '.$order->order_code.' dibatalkan.'.($cancelReason ? ' Alasan: '.$cancelReason.'.' : ''),
+            ],
+        ];
+
+        if (! isset($map[$status]) || ! $order->customer_id) {
+            return;
+        }
+
+        Notifikasi::create(array_merge($map[$status], [
+            'user_id' => $order->customer_id,
+            'order_id' => $order->id,
+        ]));
+    }
+
+    /**
+     * Catat pendapatan platform (buat halaman rekap Admin/Pendapatan) saat
+     * pesanan pertama kali berstatus 'selesai'.
+     *
+     * PENTING: method ini TIDAK menyentuh kolom `users.saldo` maupun tabel
+     * `saldo_mutasi` sama sekali. Saldo mitra sekarang dihitung dinamis lewat
+     * User::saldoMitra() (langsung dari tabel `orders` + `penarikan`), jadi
+     * tidak perlu — dan tidak boleh — "dikreditkan" secara manual di sini.
+     * Kalau nanti butuh baca saldo mitra di mana pun, selalu panggil
+     * $order->partner->saldoMitra(), jangan pernah balik ke $user->saldo.
+     */
+    protected function catatPendapatanPlatform(Order $order): void
+    {
+        if (! $order->partner_id) {
+            return;
+        }
+
+        $sudahDicatat = PendapatanPlatform::where('order_id', $order->id)->exists();
+
+        if ($sudahDicatat) {
+            return;
+        }
+
+        $komisiPersen = (float) (PaymentSetting::current()->komisi_persen ?? 10);
+        $totalPesanan = (float) $order->total_price;
+        $komisi = round($totalPesanan * $komisiPersen / 100);
+
+        PendapatanPlatform::create([
+            'order_id' => $order->id,
+            'partner_id' => $order->partner_id,
+            'total_transaksi' => $totalPesanan,
+            'komisi_persen' => $komisiPersen,
+            'jumlah_komisi' => $komisi,
+        ]);
+    }
+
+    public function updateStatus(Request $request, Order $order)
+    {
+        $validated = $request->validate([
+            'status' => ['required', Rule::in([
+                'baru',
+                'diproses',
+                'pembayaran_diterima',
+                'diproses_mitra',
+                'dikirim',
+                'dititip',
+                'pengambilan_diajukan',
+                'selesai',
+                'dibatalkan',
+                'menunggu_verifikasi_finance',
+            ])],
+            'cancel_reason' => ['required_if:status,dibatalkan', 'nullable', 'string', 'max:255'],
+        ]);
+
+        // Guard: pesanan cuma boleh 'selesai' kalau
+        // 1) pembayaran sudah diverifikasi, DAN
+        // 2) Mitra sudah menandai fase operasional sampai 'akhir'
+        //    (sudah dititipkan lalu sudah diambil/dikembalikan/dst).
+        // Ini mencegah Admin menyelesaikan pesanan yang belum pernah
+        // diverifikasi pembayarannya atau belum pernah disentuh Mitra.
+        if ($validated['status'] === 'selesai') {
+            abort_unless($order->payment_verified_at, 422, 'Pesanan belum bisa diselesaikan — pembayaran belum diverifikasi.');
+            abort_unless($order->fase === 'akhir', 422, 'Pesanan belum bisa diselesaikan — Mitra belum menandai fase akhir (barang diambil/sewa berakhir/dst).');
+            abort_unless($order->dendaLunas(), 422, 'Pesanan belum bisa diselesaikan — denda keterlambatan belum dibayar customer.');
+        }
+
+        $statusSebelumnya = $order->status;
+
+        $order->update([
+            'status' => $validated['status'],
+            'cancel_reason' => $validated['status'] === 'dibatalkan' ? $validated['cancel_reason'] : null,
+        ]);
+
+        // Catat pendapatan platform hanya saat status PERTAMA KALI jadi 'selesai'
+        // (selaras dengan User::saldoMitra() yang cuma hitung order 'selesai').
+        if ($validated['status'] === 'selesai' && $statusSebelumnya !== 'selesai') {
+            $order->load('partner');
+            $this->catatPendapatanPlatform($order);
+        }
+
+        $this->notifikasiUntukStatus($order, $validated['status'], $validated['cancel_reason'] ?? null);
+
+        return back()->with('success', 'Status pesanan berhasil diperbarui.');
+    }
+
+    public function cancelOrder(Request $request, Order $order)
+    {
+        $validated = $request->validate([
+            'cancel_reason' => ['required', 'string', 'max:255'],
+        ]);
+
+        $order->update([
+            'status' => 'dibatalkan',
+            'cancel_reason' => $validated['cancel_reason'],
+        ]);
+
+        $this->notifikasiUntukStatus($order, 'dibatalkan', $validated['cancel_reason']);
+
+        return back()->with('success', 'Pesanan '.$order->order_code.' berhasil dibatalkan oleh Admin.');
+    }
+
+    /**
+     * POST /admin/pesanan/{order}/konfirmasi-cash
+     *
+     * Khusus untuk order dengan payment_method 'cod' (Tunai/Bayar di tempat).
+     * Berbeda dari updateStatus() di atas: ini TIDAK mengubah alur status
+     * baru->diproses->selesai secara umum, tapi khusus mencatat KAPAN uang
+     * cash-nya benar-benar diterima/dikonfirmasi oleh admin - memakai kolom
+     * `payment_verified_at` yang sama seperti yang dipakai untuk pembayaran
+     * saldo (supaya konsisten, satu kolom = "kapan pembayaran terverifikasi"
+     * untuk semua metode pembayaran).
+     *
+     * Order cash yang baru dibuat statusnya 'baru' dan payment_verified_at
+     * masih null (lihat ServiceController::konfirmasiPesanan()). Begitu admin
+     * konfirmasi di sini, payment_verified_at diisi DAN status ikut naik ke
+     * 'diproses' - supaya konsisten dengan order saldo yang sudah otomatis
+     * 'diproses' sejak awal.
+     */
+    public function confirmCashPayment(Order $order)
+    {
+        abort_unless($order->payment_method === 'cod', 400, 'Order ini bukan pembayaran tunai.');
+        abort_if($order->payment_verified_at, 400, 'Uang untuk pesanan ini sudah dikonfirmasi diterima sebelumnya.');
+
+        $order->update([
+            'payment_verified_at' => now(),
+            'status' => $order->status === 'baru' ? 'diproses' : $order->status,
+        ]);
+
+        $this->notifikasiUntukStatus($order, 'diproses', null);
+
+        return back()->with('success', 'Pembayaran tunai untuk pesanan '.$order->order_code.' berhasil dikonfirmasi.');
+    }
+
+    public function verifyPayment(Order $order)
+    {
+        abort_if($order->payment_verified_at, 400, 'Pembayaran untuk pesanan ini sudah diverifikasi sebelumnya.');
+
+        $isTransfer = in_array($order->payment_method, ['transfer', 'qris', 'pending'], true);
+        $isCash = $order->payment_method === 'cod';
+
+        abort_unless($isTransfer || $isCash, 400, 'Order ini tidak memiliki bukti pembayaran yang bisa diverifikasi.');
+        abort_unless($order->payment_receipt || $isCash, 422, 'Belum ada bukti pembayaran yang diunggah untuk pesanan ini.');
+
+        $order->update([
+            'payment_verified_at' => now(),
+            'status' => $order->status === 'baru' ? 'diproses' : $order->status,
+        ]);
+
+        $this->notifikasiUntukStatus($order, 'diproses', null);
+
+        if ($order->customer_id) {
+            Notifikasi::create([
+                'user_id' => $order->customer_id,
+                'order_id' => $order->id,
+                'type' => 'pembayaran_diterima',
+                'judul' => 'Pembayaran Diverifikasi',
+                'pesan' => 'Pembayaran untuk pesanan '.$order->order_code.' telah diverifikasi oleh admin.',
+            ]);
+        }
+
+        if ($order->partner_id) {
+            Notifikasi::create([
+                'user_id' => $order->partner_id,
+                'order_id' => $order->id,
+                'type' => 'pembayaran_diterima',
+                'judul' => 'Pembayaran Diverifikasi',
+                'pesan' => 'Pembayaran untuk pesanan '.$order->order_code.' telah diverifikasi oleh admin.',
+            ]);
+        }
+
+        return back()->with('success', 'Pembayaran untuk pesanan '.$order->order_code.' berhasil diverifikasi.');
+    }
+
+    public function approveDenda(Order $order)
+    {
+        abort_unless($order->bukti_denda || $order->denda_payment_receipt, 422, 'Bukti pembayaran denda belum diunggah.');
+        abort_unless($order->hitungDenda() > 0, 422, 'Pesanan ini tidak memiliki denda keterlambatan.');
+        abort_if($order->denda_paid_at, 422, 'Denda untuk pesanan ini sudah diverifikasi sebelumnya.');
+
+        $order->update([
+            'denda_paid_at' => now(),
+            'denda_amount' => $order->hitungDenda(),
+            'status_denda' => 'terverifikasi',
+        ]);
+
+        if ($order->customer_id) {
+            Notifikasi::create([
+                'user_id' => $order->customer_id,
+                'order_id' => $order->id,
+                'type' => 'pembayaran_diterima',
+                'judul' => 'Denda Terverifikasi',
+                'pesan' => 'Pembayaran denda untuk pesanan '.$order->order_code.' telah diverifikasi.',
+            ]);
+        }
+
+        return back()->with('success', 'Denda berhasil diverifikasi, saldo mitra otomatis bertambah.');
+    }
+
+    public function destroy(Order $order)
+    {
+        // Hapus file bukti pembayaran fisik jika ada
+        if ($order->payment_receipt) {
+            Storage::disk('public')->delete(str_replace('/storage/', '', $order->payment_receipt));
+        }
+
+        $order->delete();
+
+        return back()->with('success', 'Pesanan berhasil dihapus.');
+    }
+
+    public function bulkDestroy(Request $request)
+    {
+        $validated = $request->validate([
+            'ids' => ['required', 'array', 'min:1'],
+            'ids.*' => ['integer', 'exists:orders,id'],
+        ]);
+
+        $orders = Order::whereIn('id', $validated['ids'])->get();
+
+        foreach ($orders as $order) {
+            if ($order->payment_receipt) {
+                Storage::disk('public')->delete(str_replace('/storage/', '', $order->payment_receipt));
+            }
+        }
+
+        $count = Order::whereIn('id', $validated['ids'])->delete();
+
+        return back()->with('success', "{$count} pesanan berhasil dihapus.");
+    }
+}

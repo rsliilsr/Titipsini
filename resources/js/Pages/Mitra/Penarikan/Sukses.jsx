@@ -1,0 +1,173 @@
+import { Head, Link } from '@inertiajs/react';
+import { Clock3, ArrowLeft, AlertCircle, MinusCircle } from 'lucide-react';
+
+function formatRupiah(value) {
+    return new Intl.NumberFormat('id-ID').format(value ?? 0);
+}
+
+// Komponen Baris Rincian
+const Row = ({ label, value, bold }) => (
+    <div className="flex justify-between items-center text-[11px] py-1.5 border-b border-green-100 dark:border-gray-700 last:border-b-0">
+        <span className="text-gray-400 dark:text-gray-500">{label}</span>
+        <span className={`${bold ? 'font-bold text-green-700 dark:text-green-400' : 'font-medium text-gray-800 dark:text-gray-200'}`}>
+            {value}
+        </span>
+    </div>
+);
+
+export default function PenarikanSukses({ penarikan }) {
+    // Data dari Controller Laravel (penarikan) / fallback dummy jika dipanggil manual
+    const data = penarikan || {
+        id: Date.now(),
+        jumlah: 0,
+        nama_bank: '-',
+        nomor_rekening: '-',
+        nama_pemilik: '-',
+        status: 'pending',
+        utang_refund_dipotong: 0,
+        jumlah_dikirim: 0,
+    };
+
+    const utangDipotong = Number(data.utang_refund_dipotong || 0);
+    const jumlahDikirim = Number(data.jumlah_dikirim || 0);
+
+    return (
+        <div className="flex min-h-screen items-center justify-center bg-gray-200 dark:bg-gray-800 p-4">
+            <Head title="Penarikan Diajukan" />
+
+            {/* Container Mobile View */}
+            <div className="relative flex h-[850px] w-full max-w-[430px] flex-col overflow-hidden bg-white dark:bg-gray-800 shadow-xl rounded-lg">
+                
+                {/* NAVBAR STANDAR (BACK KE DASHBOARD MITRA) */}
+                <header className="relative z-20 flex h-14 items-center justify-between border-b border-gray-200/80 dark:border-gray-700 bg-white dark:bg-gray-800 px-4">
+                    <Link
+                        href={typeof route !== 'undefined' ? route('mitra.dashboard') : '/mitra/dashboard'}
+                        className="flex h-9 w-9 items-center justify-center rounded-full text-gray-600 transition hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+                    >
+                        <ArrowLeft size={20} />
+                    </Link>
+                    <h1 className="text-sm font-semibold text-gray-800 dark:text-gray-100">
+                        Detail Penarikan
+                    </h1>
+                    <div className="w-9" />
+                </header>
+
+                {/* CEKUNGAN HIJAU */}
+                <div className="absolute inset-x-0 top-14 h-44 bg-green-100/80 dark:bg-green-950/50 -translate-y-4 rounded-b-[100%] z-0 border-b border-green-200/60 dark:border-green-800/40" />
+
+                {/* Main Content */}
+                <div className="relative z-10 flex flex-grow flex-col items-center justify-start text-center p-5 pt-6">
+                    
+                    {/* LOGO */}
+                    <div className="mb-2 flex items-center justify-center">
+                        <img
+                            src="/images/logo-titipsini.png"
+                            alt="Logo Titipsini"
+                            className="h-24 w-auto object-contain drop-shadow-md"
+                        />
+                    </div>
+
+                    {/* BRAND TEXT */}
+                    <div className="mb-6 pt-8">
+                        <span className="text-2xl font-bold tracking-tight text-green-700 dark:text-green-400">
+                            Titipsini<span className="text-[#fbbf24] mx-0.5">•</span>Com
+                        </span>
+                    </div>
+
+                    {/* ICON JAM STATUS */}
+                    <div className="p-3 bg-amber-50 dark:bg-amber-950/40 rounded-full mb-2 border border-amber-200/50 dark:border-amber-800/30 shadow-sm">
+                        <Clock3 size={36} className="text-amber-500" />
+                    </div>
+
+                    {utangDipotong > 0 ? (
+                        <div className="mb-4 w-full rounded-xl border border-red-200 bg-red-50 p-3 dark:border-red-900/40 dark:bg-red-950/30">
+                            <div className="flex items-start gap-2">
+                                <AlertCircle size={18} className="text-red-600 shrink-0 mt-0.5" />
+                                <div className="text-left text-[11px] text-red-700 dark:text-red-400">
+                                    <p className="font-bold">Potongan Utang Refund</p>
+                                    <p className="mt-0.5">
+                                        Dari total penarikan <span className="font-semibold">Rp{formatRupiah(data.jumlah)}</span>,
+                                        dipotong utang refund <span className="font-semibold">Rp{formatRupiah(utangDipotong)}</span>.
+                                    </p>
+                                    <p className="mt-1 font-bold text-green-700 dark:text-green-400">
+                                        Dana yang dikirim ke rekening: <span className="text-green-600">Rp{formatRupiah(jumlahDikirim)}</span>
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                    ) : null}
+
+                    <h2 className="text-base font-bold text-gray-900 dark:text-gray-100">
+                        Penarikan Diajukan & Sedang Diproses
+                    </h2>
+                    <p className="mt-1 text-xs text-gray-400 dark:text-gray-400 max-w-[280px] leading-relaxed">
+                        Dana akan masuk ke rekening Anda dalam waktu 1x24 jam. Harap tunggu konfirmasi sistem kami.
+                    </p>
+
+                    {/* RINGKASAN PENARIKAN */}
+                    <div className="mt-4 w-full rounded-2xl border border-green-100 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 text-left shadow-sm">
+                        <div className="flex justify-center mb-3">
+                            <span className="text-[10px] font-bold text-green-700 dark:text-green-400 uppercase tracking-wider px-3 py-0.5 bg-green-50 dark:bg-green-950/50 rounded-full border border-green-200 dark:border-green-800">
+                                Ringkasan Penarikan
+                            </span>
+                        </div>
+
+                        <Row 
+                            label="Nomor Referensi" 
+                            value={`PNR-${String(data.id).padStart(6, '0')}`} 
+                        />
+                        <Row 
+                            label="Bank Tujuan" 
+                            value={data.nama_bank} 
+                        />
+                        <Row 
+                            label="Nomor Rekening" 
+                            value={data.nomor_rekening} 
+                        />
+                        <Row 
+                            label="Nama Pemilik" 
+                            value={data.nama_pemilik} 
+                        />
+                        <Row 
+                            label="Total Dana Diajukan" 
+                            value={`Rp ${formatRupiah(data.jumlah)}`} 
+                            bold 
+                        />
+                        
+                        {utangDipotong > 0 && (
+                            <>
+                                <Row 
+                                    label="Potongan Utang Refund" 
+                                    value={`- Rp ${formatRupiah(utangDipotong)}`} 
+                                />
+                                <Row 
+                                    label="Dana yang Dikirim" 
+                                    value={`Rp ${formatRupiah(jumlahDikirim)}`} 
+                                    bold 
+                                />
+                            </>
+                        )}
+
+                        <div className="flex items-center justify-between py-1.5 border-t border-green-100 dark:border-gray-700 mt-1">
+                            <span className="text-gray-400 dark:text-gray-500 text-[11px]">Status</span>
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400 capitalize">
+                                {data.status || 'Diproses'}
+                            </span>
+                        </div>
+                    </div>
+
+                    {/* TOMBOL KEMBALI KE BERANDA */}
+                    <div className="absolute bottom-6 left-5 right-5 z-20">
+                        <Link
+                            href={typeof route !== 'undefined' ? route('mitra.dashboard') : '/mitra/dashboard'}
+                            className="block w-full rounded-lg bg-green-700 py-3 text-xs font-semibold text-white shadow-md hover:bg-green-800 transition text-center active:bg-green-900 dark:bg-green-600 dark:hover:bg-green-700"
+                        >
+                            Kembali ke Beranda
+                        </Link>
+                    </div>
+
+                </div>
+            </div>
+        </div>
+    );
+}
